@@ -1,0 +1,37 @@
+missile:
+  x0: 0.0
+  y0: 0.0
+  vx0: 300.0
+  vy0: 0.0
+
+target:
+  x0: 10000.0
+  y0: 500.0
+  vx0: -200.0
+  vy0: 0.0
+
+simulation:
+  dt: 0.01
+  t_max: 60.0
+  N: 4
+
+ekf:
+  Q_diag: [0.001, 0.001, 0.003, 0.003]
+  R_scalar: 0.000001
+  lock_threshold: 50.0
+  t_acquisition: 2.0
+
+guidance:
+  N: 4
+  a_max: 300.0
+
+attacker:
+  injection_rate: 0.0
+  injection_angle_deg: 90.0
+  physical_accel_max: 100.0
+  active: false
+
+monitor:
+  alpha: 0.05
+  n_z: 1
+  window_size: 10

@@ -1,0 +1,72 @@
+﻿# ── Python cache ──────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.eggs/
+
+# ── Virtual environments ───────────────────────
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Pytest ────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ── Jupyter ───────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Results — data and figures are generated ──
+# Keep directory structure, ignore generated content
+results/data/*.csv
+results/data/*.json
+results/data/test_runner/
+results/pytest_final.log
+results/SPECTRE_SIM_QA_REPORT.json
+
+# ── Keep figure directory but not generated PNGs
+results/figures/*.png
+
+# ── Temp config files from simulation runner ──
+tmp*.yaml
+temp*.yaml
+
+# ── OS artifacts ──────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ── IDE artifacts ─────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ── Logs ──────────────────────────────────────
+*.log
+logs/

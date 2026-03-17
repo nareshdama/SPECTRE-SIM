@@ -1,0 +1,2 @@
+"""SPECTRE-SIM source package."""
+
