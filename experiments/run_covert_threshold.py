@@ -77,11 +77,14 @@ def derive_analytical_threshold(config: dict) -> dict:
     innov_vals = tail["innovation"].values
     chi2_vals  = tail["chi2_stat"].values
     valid = chi2_vals > 1e-12
-    S_inf_est = float(np.median(
-        innov_vals[valid]**2 / chi2_vals[valid]
-    ))
 
-    R_scalar = config["ekf"]["R_scalar"]
+    # S_inf estimate (bearing channel, diagnostic only)
+    s_vals = innov_vals[valid]**2 / np.maximum(chi2_vals[valid], 1e-12)
+    S_inf_est = float(np.median(s_vals)) if len(s_vals) > 0 else 1e-6
+
+    ekf_cfg = config["ekf"]
+    R_bearing = (ekf_cfg["R_diag"][0] if "R_diag" in ekf_cfg
+                 else ekf_cfg.get("R_scalar", 1e-6))
     dt = config["simulation"]["dt"]
 
     alpha = config["monitor"]["alpha"]
@@ -109,7 +112,7 @@ def derive_analytical_threshold(config: dict) -> dict:
     for _ in range(100):
         lam_mid = (lam_lo + lam_hi) / 2.0
         prob = float(1.0 - ncx2.cdf(
-            chi2_thresh, df=1, nc=lam_mid))
+            chi2_thresh, df=n_z, nc=lam_mid))
         if prob < det_rate_cal:
             lam_lo = lam_mid
         else:
@@ -124,7 +127,7 @@ def derive_analytical_threshold(config: dict) -> dict:
     for _ in range(100):
         lam_mid = (lam_lo + lam_hi) / 2.0
         prob = float(1.0 - ncx2.cdf(
-            chi2_thresh, df=1, nc=lam_mid))
+            chi2_thresh, df=n_z, nc=lam_mid))
         if prob < DETECTION_TRIGGER_RATE:
             lam_lo = lam_mid
         else:
@@ -143,7 +146,7 @@ def derive_analytical_threshold(config: dict) -> dict:
         "innovation_max":        innovation_max,
         "bandwidth_estimate":    bandwidth,
         "chi2_threshold":        chi2_thresh,
-        "R_scalar":              R_scalar,
+        "R_bearing":             R_bearing,
         "lambda_star":           lambda_target,
         "T_transfer":            T_transfer,
         "calibration_I_dot":     I_dot_cal,
@@ -297,7 +300,7 @@ def generate_figure_covert_threshold(
     )
 
     ax.set_xlabel(
-        "Injection Rate $\\dot{I}$ (rad/s per second)",
+        r"Injection Rate $\dot{I}$ (rad/s$^2$)",
         fontsize=12
     )
     ax.set_ylabel(

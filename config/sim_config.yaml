@@ -17,7 +17,7 @@ simulation:
 
 ekf:
   Q_diag: [0.001, 0.001, 0.003, 0.003]
-  R_scalar: 0.000001
+  R_diag: [0.000001, 25.0]
   lock_threshold: 50.0
   t_acquisition: 2.0
 
@@ -28,10 +28,11 @@ guidance:
 attacker:
   injection_rate: 0.0
   injection_angle_deg: 90.0
-  physical_accel_max: 100.0
+  physical_accel_max: 2000.0
+  range_injection_scale: 5000.0
   active: false
 
 monitor:
   alpha: 0.05
-  n_z: 1
+  n_z: 2
   window_size: 10

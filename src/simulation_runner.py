@@ -19,16 +19,13 @@ class SPECTRESimulation:
 
     Orchestrates one complete missile-target engagement:
         1. Engagement geometry (RK4 physics)
-        2. EKF seeker (state estimation)
+        2. EKF seeker (state estimation, 2-channel bearing+range)
         3. PN guidance (acceleration command)
         4. Adversarial attacker (false measurement injection)
         5. Chi-squared monitor (bad-data detection)
-
-    Usage:
-        sim = SPECTRESimulation("config/sim_config.yaml")
-        results = sim.run(seed=42)
-        sim.save_results("results/data/")
     """
+
+    ENDGAME_RANGE_THRESHOLD = 100.0  # meters
 
     def __init__(self, config_path: str):
         with open(config_path, "r") as f:
@@ -37,18 +34,15 @@ class SPECTRESimulation:
         self.dt = self.config["simulation"]["dt"]
         self.t_max = self.config["simulation"]["t_max"]
 
-        # Instantiate all modules
         self.geometry = EngagementGeometry(self.config)
         self.ekf = EKFSeeker(self.config)
         self.guidance = PNGuidance(self.config)
         self.attacker = InjectionAttacker(self.config)
         self.monitor = Chi2InnovationMonitor(self.config)
 
-        # Results placeholder
         self.results = {}
 
     def _get_initial_relative_state(self) -> np.ndarray:
-        """Compute initial EKF state from config."""
         cfg = self.config
         return np.array([
             cfg["target"]["x0"]  - cfg["missile"]["x0"],
@@ -57,100 +51,91 @@ class SPECTRESimulation:
             cfg["target"]["vy0"] - cfg["missile"]["vy0"]
         ], dtype=float)
 
+    def _build_R_matrix(self) -> np.ndarray:
+        ekf_cfg = self.config["ekf"]
+        if "R_diag" in ekf_cfg:
+            return np.diag(ekf_cfg["R_diag"]).astype(float)
+        return np.array([[ekf_cfg["R_scalar"]]]).astype(float)
+
     def run(self, seed: int = 0) -> dict:
-        """
-        Execute one complete engagement simulation.
-
-        Args:
-            seed: random seed for measurement noise reproducibility
-
-        Returns:
-            results dict with all metrics and DataFrames
-        """
         np.random.seed(seed)
 
-        # Reset all modules
         self.geometry.reset()
         self.ekf.reset(self._get_initial_relative_state())
         self.guidance.reset()
         self.attacker.reset()
         self.monitor.reset()
 
-        # Run engagement loop
         self._simulation_loop()
 
-        # Collect and store results
         self.results = self._collect_results()
         return self.results
 
     def _simulation_loop(self) -> None:
         """
-        Main timestep loop. Runs until intercept or t_max.
-
-        Data flow each step:
-            geometry → true state
-            true state → noisy measurement z_true
-            attacker → z_measured (injected or clean)
-            ekf.predict + ekf.update(z_measured) → state estimate
-            ekf.get_los_rate_estimate + geometry.Vc → guidance command
-            monitor.check(chi2_stat) → alarm flag
-            guidance command → geometry.step (next timestep)
+        Main timestep loop. Supports both 1-channel (legacy) and
+        2-channel (bearing+range) measurement models.
         """
-        R_scalar = self.config["ekf"]["R_scalar"]
+        R_matrix = self._build_R_matrix()
+        n_z = R_matrix.shape[0]
+        is_2ch = (n_z >= 2)
         accel_cmd = 0.0
         t = 0.0
 
         while True:
-            # 1. Step geometry forward with current command
             state = self.geometry.step(accel_cmd)
             t = state["t"]
 
-            # 2. Compute true angular measurement + noise
             dx = state["tx"] - state["mx"]
             dy = state["ty"] - state["my"]
-            z_true = np.arctan2(dy, dx)
-            noise = np.random.normal(0.0, np.sqrt(R_scalar))
-            z_noisy = z_true + noise
+            r = state["range"]
 
-            # 3. Attacker injects (or passes through clean)
+            if is_2ch:
+                z_true = np.array([np.arctan2(dy, dx), r])
+                noise = np.random.multivariate_normal(
+                    np.zeros(n_z), R_matrix
+                )
+                z_noisy = z_true + noise
+            else:
+                z_true = np.arctan2(dy, dx)
+                noise = np.random.normal(0.0, np.sqrt(R_matrix[0, 0]))
+                z_noisy = z_true + noise
+
             z_measured = self.attacker.compute_injection(t, z_noisy)
 
-            # 4. EKF predict and update
             self.ekf.predict()
             ekf_out = self.ekf.update(z_measured)
 
-            # 5. Activate attacker at EKF acquisition lock
             if self.ekf.is_locked() and not self.attacker.is_active():
                 self.attacker.activate(t)
 
-            # 6. Compute PN guidance command
             los_rate_hat = self.ekf.get_los_rate_estimate()
             Vc = state["Vc"]
             accel_cmd = self.guidance.compute_command(los_rate_hat, Vc)
 
-            # 7. Monitor chi-squared statistic
-            self.monitor.check(ekf_out["chi2_stat"])
+            # Determine engagement phase for the monitor
+            if not self.ekf.is_locked():
+                phase = "startup"
+            elif r < self.ENDGAME_RANGE_THRESHOLD:
+                phase = "endgame"
+            else:
+                phase = "tracking"
+            self.monitor.check(ekf_out["chi2_stat"], phase=phase)
 
-            # 8. Check termination
             if self.geometry.is_intercept():
                 break
 
     def _collect_results(self) -> dict:
-        """
-        Assemble complete results dictionary from all module outputs.
-        """
         geo_df      = self.geometry.export_history()
         ekf_df      = self.ekf.export_gain_history()
         guidance_df = self.guidance.export_history()
         attacker_df = self.attacker.export_history()
         monitor_df  = self.monitor.export_history()
 
-        # Estimate Ca: miss_distance / injection_rate (if attack active)
         inj_rate = self.config["attacker"]["injection_rate"]
         miss = self.geometry.get_miss_distance()
         Ca_estimate = (miss / inj_rate) if inj_rate > 1e-9 else None
 
-        # Lock time: first t where EKF is locked in gain history
         lock_time = None
         if not ekf_df.empty:
             locked_rows = ekf_df[ekf_df["locked"] == True]
@@ -158,10 +143,10 @@ class SPECTRESimulation:
                 lock_time = float(locked_rows["t"].iloc[0])
 
         return {
-            # Scalar metrics
             "miss_distance":    miss,
             "t_final":          self.geometry.t_current,
-            "detection_rate":   self.monitor.get_detection_rate(),
+            "detection_rate":   self.monitor.get_tracking_detection_rate(),
+            "detection_rate_cumulative": self.monitor.get_detection_rate(),
             "max_chi2":         float(
                 monitor_df["chi2_stat"].max()
                 if not monitor_df.empty else 0.0
@@ -173,7 +158,6 @@ class SPECTRESimulation:
             "injection_rate":   inj_rate,
             "seed":             int(np.random.get_state()[1][0]),
 
-            # DataFrames
             "geometry_df":      geo_df,
             "ekf_df":           ekf_df,
             "guidance_df":      guidance_df,
@@ -183,22 +167,13 @@ class SPECTRESimulation:
 
     def save_results(self, output_dir: str,
                      run_id: str = "run") -> None:
-        """
-        Save all DataFrames as CSV and scalar metrics as JSON.
-        Enforces: each file < 99MB.
-
-        Args:
-            output_dir : directory to write results
-            run_id     : prefix for filenames (e.g. 'clean', 'attack')
-        """
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save DataFrames
         df_keys = [
             "geometry_df", "ekf_df", "guidance_df",
             "attacker_df", "monitor_df"
         ]
-        size_limit = 99 * 1024 * 1024  # 99 MB in bytes
+        size_limit = 99 * 1024 * 1024
 
         for key in df_keys:
             df = self.results.get(key)
@@ -213,7 +188,6 @@ class SPECTRESimulation:
                     f"{fsize / 1024**2:.2f} MB"
                 )
 
-        # Save scalar summary
         summary = {
             k: v for k, v in self.results.items()
             if not isinstance(v, pd.DataFrame)
@@ -230,37 +204,19 @@ class SPECTRESimulation:
         config_path: str,
         overrides: dict
     ) -> "SPECTRESimulation":
-        """
-        Create simulation instance with config parameter overrides.
-        Used by experiments to sweep injection rates and angles
-        without modifying the base config file.
-
-        Args:
-            config_path : path to base sim_config.yaml
-            overrides   : flat dict of dotted-key overrides, e.g.
-                          {"attacker.injection_rate": 0.05,
-                           "attacker.active": True}
-
-        Returns:
-            SPECTRESimulation instance with overrides applied
-        """
         import copy
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        # Apply overrides using dot notation
         for dotted_key, value in overrides.items():
             keys = dotted_key.split(".")
             d = config
             for k in keys[:-1]:
                 d = d[k]
-            # Convert numpy types to native Python for YAML safety
             if hasattr(value, 'item'):
                 value = value.item()
             d[keys[-1]] = value
 
-        # Write to temp config and instantiate
-        # (avoids modifying base config file)
         import tempfile
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml",

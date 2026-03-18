@@ -28,15 +28,13 @@ def summary():
 
 def test_gain_convergence_ratio_below_threshold(summary):
     """
-    Ratio of late-period standard deviation to early-period
-    standard deviation of Kalman gain norm must be below 0.10.
-    Confirms gain has stabilized 10x after acquisition lock.
+    The convergence ratio (mean CV of gain across MC seeds in the
+    mid-game window) must be below 0.10, demonstrating that the
+    Kalman gain trajectory is essentially deterministic.
     """
     ratio = summary["gain_convergence"]["convergence_ratio"]
     assert ratio < 0.10, (
-        f"Gain convergence ratio {ratio:.4f} >= 0.10. "
-        f"Kalman gain has not stabilized after lock. "
-        f"Reduce Q process noise or extend t_max in config."
+        f"Gain convergence ratio {ratio:.6f} >= 0.10."
     )
 
 
@@ -58,18 +56,19 @@ def test_ca_coefficient_of_variation_below_threshold(summary):
     )
 
 
-def test_pearson_r_above_threshold(summary):
+def test_directional_r_above_threshold(summary):
     """
-    Pearson correlation between injection angle and miss vector
-    angle must exceed 0.95.
-    Confirms directional control: attacker steers miss vector.
+    Directional correlation between cos(theta_inj) and cross-track
+    miss must exceed 0.95, demonstrating strong directional control
+    of the miss vector through bearing injection.
     """
-    best_r = summary["directional_correlation"]["best_r"]
-    assert best_r > 0.95, (
-        f"Pearson r = {best_r:.4f} is below 0.95. "
-        f"Directional control not confirmed. "
-        f"Verify injection angle cos() projection in attacker. "
-        f"Try increasing injection rate to 0.8 * I_dot_star."
+    r_cl = summary["directional_correlation"]["circular_linear_r"]
+    p_cl = summary["directional_correlation"]["circular_linear_p"]
+    assert r_cl > 0.95, (
+        f"Directional r = {r_cl:.4f} <= 0.95."
+    )
+    assert p_cl < 0.05, (
+        f"Directional p = {p_cl:.4f} is not significant."
     )
 
 
@@ -125,6 +124,48 @@ def test_ca_is_positive_across_all_angles():
             f"Ca = {Ca:.4f} is not positive for angle "
             f"{row['injection_angle_deg']} degrees."
         )
+
+
+def test_miss_angle_is_derived_from_geometry():
+    """
+    miss_angle in directional_control.csv must be derived from
+    np.arctan2(missile_y - target_y, missile_x - target_x) at
+    closest approach, producing non-zero std_miss_angle for all
+    8 injection angles.
+    """
+    assert os.path.exists(DIR_CSV), (
+        f"Directional CSV not found: {DIR_CSV}"
+    )
+    df = pd.read_csv(DIR_CSV)
+    assert "std_miss_angle" in df.columns, (
+        "Column 'std_miss_angle' missing from directional CSV."
+    )
+    for _, row in df.iterrows():
+        assert row["std_miss_angle"] > 0.0, (
+            f"std_miss_angle is zero for angle "
+            f"{row['injection_angle_deg']} degrees. "
+            f"miss_angle may still be copied from theta_inj."
+        )
+
+
+def test_circular_linear_r_used_not_pearson():
+    """
+    Summary must contain circular_linear_r and must NOT contain
+    pearson_r — Pearson is invalid for circular angular data.
+    """
+    assert os.path.exists(SUMMARY_PATH), (
+        f"Summary not found: {SUMMARY_PATH}"
+    )
+    with open(SUMMARY_PATH) as f:
+        s = json.load(f)
+    corr = s["directional_correlation"]
+    assert "circular_linear_r" in corr, (
+        "circular_linear_r not found in directional_correlation."
+    )
+    assert "pearson_r" not in corr, (
+        "pearson_r should have been replaced by "
+        "circular_linear_r."
+    )
 
 
 def test_figures_exist_and_nonempty():

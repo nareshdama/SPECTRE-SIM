@@ -13,13 +13,12 @@ class Chi2InnovationMonitor:
         where:  chi2_threshold = chi2.ppf(1 - alpha, df=n_z)
                 chi2_stat      = r_k^T * S_k^{-1} * r_k
 
-    For scalar measurement (n_z=1):
-        chi2_stat = innovation^2 / S_scalar
-        threshold = chi2.ppf(0.95, df=1) = 3.8415
+    Supports n_z = 1 (bearing-only) and n_z = 2 (bearing + range).
 
-    Rolling window:
-        Tracks detection rate over last `window_size` steps
-        to capture burst-mode attack detection.
+    Phase-aware detection rates:
+        Tracks separate alarm counts for 'startup', 'tracking',
+        and 'endgame' phases so the steady-state (tracking-phase)
+        detection rate is not polluted by transient or endgame effects.
     """
 
     def __init__(self, config: dict):
@@ -30,12 +29,10 @@ class Chi2InnovationMonitor:
         self.n_z = int(mon_cfg["n_z"])
         self.window_size = int(mon_cfg.get("window_size", 10))
 
-        # Compute threshold analytically from scipy
         self.threshold = float(
             scipy_chi2.ppf(1.0 - self.alpha, df=self.n_z)
         )
 
-        # Runtime state
         self.history = []
         self.t_current = 0.0
         self.dt = config["simulation"]["dt"]
@@ -43,64 +40,74 @@ class Chi2InnovationMonitor:
         self._total_alarms = 0
         self._window = deque(maxlen=self.window_size)
 
+        self._phase_checks = {"startup": 0, "tracking": 0, "endgame": 0}
+        self._phase_alarms = {"startup": 0, "tracking": 0, "endgame": 0}
+
     def reset(self) -> None:
-        """Reset monitor to initial state."""
         self.history = []
         self.t_current = 0.0
         self._total_checks = 0
         self._total_alarms = 0
         self._window = deque(maxlen=self.window_size)
+        self._phase_checks = {"startup": 0, "tracking": 0, "endgame": 0}
+        self._phase_alarms = {"startup": 0, "tracking": 0, "endgame": 0}
 
-    def check(self, chi2_stat: float) -> bool:
+    def check(self, chi2_stat: float, phase: str = "tracking") -> bool:
         """
         Evaluate chi-squared statistic against threshold.
 
         Args:
             chi2_stat: EKF innovation chi-squared statistic (scalar)
+            phase: engagement phase -- 'startup', 'tracking', or 'endgame'
 
         Returns:
-            True  = ALARM (anomaly detected, possible attack)
-            False = PASS  (measurement within expected bounds)
+            True  = ALARM (anomaly detected)
+            False = PASS  (within expected bounds)
         """
         alarm = bool(chi2_stat > self.threshold)
 
-        # Update counters
         self._total_checks += 1
         if alarm:
             self._total_alarms += 1
         self._window.append(int(alarm))
 
-        # Log
+        if phase in self._phase_checks:
+            self._phase_checks[phase] += 1
+            if alarm:
+                self._phase_alarms[phase] += 1
+
         self.history.append({
             "t":              self.t_current,
             "chi2_stat":      chi2_stat,
             "threshold":      self.threshold,
             "alarm":          int(alarm),
-            "rolling_rate":   self.get_rolling_detection_rate()
+            "rolling_rate":   self.get_rolling_detection_rate(),
+            "phase":          phase
         })
 
         self.t_current += self.dt
         return alarm
 
     def get_threshold(self) -> float:
-        """Return the analytical chi-squared threshold."""
         return self.threshold
 
     def get_detection_rate(self) -> float:
-        """
-        Return cumulative detection rate:
-            total_alarms / total_checks
-        Returns 0.0 if no checks performed yet.
-        """
+        """Cumulative detection rate over the entire engagement."""
         if self._total_checks == 0:
             return 0.0
         return self._total_alarms / self._total_checks
 
+    def get_tracking_detection_rate(self) -> float:
+        """
+        Detection rate during the steady-state tracking phase only.
+        Excludes startup transients and endgame range-collapse effects.
+        """
+        checks = self._phase_checks.get("tracking", 0)
+        if checks == 0:
+            return 0.0
+        return self._phase_alarms["tracking"] / checks
+
     def get_rolling_detection_rate(self) -> float:
-        """
-        Return detection rate over the last `window_size` steps.
-        Returns 0.0 if window is empty.
-        """
         if len(self._window) == 0:
             return 0.0
         return sum(self._window) / len(self._window)
@@ -112,8 +119,4 @@ class Chi2InnovationMonitor:
         return self._total_checks
 
     def export_history(self) -> pd.DataFrame:
-        """
-        Export full monitor history as DataFrame.
-        Columns: t, chi2_stat, threshold, alarm, rolling_rate
-        """
         return pd.DataFrame(self.history)

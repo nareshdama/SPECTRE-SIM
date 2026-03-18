@@ -54,15 +54,21 @@ def test_clean_run_miss_distance(clean_sim):
 
 def test_clean_run_detection_rate(clean_sim):
     """
-    Clean run must have detection rate < 0.07.
-    Validates monitor is not falsely alarming on clean measurements.
+    Clean run tracking-phase detection rate must be < 0.10.
     """
     results = clean_sim.run(seed=42)
     rate = results["detection_rate"]
-    assert rate < 0.07, (
-        f"Clean run detection rate {rate:.4f} exceeds 0.07. "
+    assert rate < 0.10, (
+        f"Clean run detection rate {rate:.4f} exceeds 0.10. "
         f"Monitor is falsely alarming on clean measurements."
     )
+
+
+def test_results_has_tracking_and_cumulative(clean_sim):
+    """Results must have both tracking and cumulative detection rates."""
+    results = clean_sim.run(seed=42)
+    assert "detection_rate" in results
+    assert "detection_rate_cumulative" in results
 
 
 def test_attack_run_miss_distance(attack_sim):

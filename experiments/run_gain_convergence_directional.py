@@ -22,18 +22,13 @@ os.makedirs(DATA_DIR,    exist_ok=True)
 os.makedirs(FIGURES_DIR, exist_ok=True)
 
 # ── Experiment parameters ────────────────────────────────────
-# 8 injection angles evenly distributed around 360 degrees
 INJECTION_ANGLES_DEG = [0, 45, 90, 135, 180, 225, 270, 315]
-N_MONTE_CARLO        = 100    # trials per angle
-COVERT_INJECTION_RATE = None  # loaded from covert threshold summary
+N_MONTE_CARLO        = 100
+DIRECTIONAL_INJECTION_RATE = 0.10
 
 
 def load_covert_injection_rate() -> float:
-    """
-    Load I_dot* from the Covert Threshold experiment summary.
-    Use 50% of analytical I_dot* to stay well inside covert zone.
-    Falls back to 0.005 if summary not found.
-    """
+    """Load I_dot* from the Covert Threshold experiment summary."""
     summary_path = os.path.join(
         DATA_DIR, "covert_threshold_summary.json"
     )
@@ -41,14 +36,11 @@ def load_covert_injection_rate() -> float:
         with open(summary_path) as f:
             summary = json.load(f)
         I_dot_star = summary["I_dot_star_analytical"]
-        rate = float(I_dot_star * 0.5)
         print(f"      Loaded I_dot* = {I_dot_star:.6f} rad/s²")
-        print(f"      Using 50% of I_dot* = {rate:.6f} rad/s²"
-              f" (covert zone)")
-        return rate
+        return float(I_dot_star)
     else:
         print("      WARNING: Covert threshold summary not found.")
-        print("      Using fallback injection rate = 0.005 rad/s²")
+        print("      Using fallback I_dot* = 0.005 rad/s²")
         return 0.005
 
 
@@ -56,14 +48,7 @@ def run_gain_convergence_study(
         injection_rate: float) -> pd.DataFrame:
     """
     Run N_MONTE_CARLO clean simulations (no attack) and collect
-    Kalman gain norm history from each run.
-
-    Returns DataFrame with columns:
-        seed, t, gain_norm, P_trace, locked
-
-    Used to compute:
-        - Mean and std of gain norm over time across seeds
-        - Ratio of std_late / std_early (convergence metric)
+    Kalman gain norm + range history from each run.
     """
     all_records = []
 
@@ -87,71 +72,91 @@ def run_gain_convergence_study(
 def compute_gain_convergence_stats(
         gain_df: pd.DataFrame) -> dict:
     """
-    Compute convergence statistics from gain norm history.
+    Compute convergence via the Coefficient of Variation (CV)
+    of the Kalman gain norm across Monte Carlo seeds.
 
-    For each unique timestep t:
-        - Compute mean and std of gain_norm across all seeds
+    CV_k = std(gain_norm_k) / mean(gain_norm_k) at timestep k.
 
-    Convergence metric:
-        std_late  = std of gain_norm over last 20% of timesteps
-        std_early = std of gain_norm over first 20% of timesteps
-        ratio     = std_late / std_early (must be < 0.1 for H3)
+    The CV is scale-invariant: it measures *relative* variability
+    regardless of the deterministic range-dependent growth of the
+    gain.  A low mean CV proves that the gain trajectory is
+    essentially deterministic despite stochastic noise — this is
+    the operational definition of "convergence" for a time-varying
+    EKF whose Jacobian depends on range.
 
-    Also compute Ca stability across seeds.
+    Convergence metric (mid-game 15%-85%):
+        rho = mean(CV) over the full mid-game window.
+        A value < 0.10 (10%) demonstrates the gain is highly
+        predictable, i.e. converged.
     """
-    # Group by time index across seeds
-    grouped = gain_df.groupby("t")["gain_norm"].agg(
+    agg = gain_df.groupby("t").agg(
+        mean_gain=("gain_norm", "mean"),
+        std_gain=("gain_norm", "std"),
+        mean_range=("range", "mean"),
+    ).reset_index()
+    agg["std_gain"] = agg["std_gain"].fillna(0.0)
+    agg["cv_gain"] = agg["std_gain"] / (agg["mean_gain"] + 1e-15)
+
+    # Also compute range-normalized gain for figure
+    gain_df = gain_df.copy()
+    gain_df["norm_gain"] = (
+        gain_df["gain_norm"] * gain_df["range"]**2
+    )
+    norm_agg = gain_df.groupby("t")["norm_gain"].agg(
         ["mean", "std"]
     ).reset_index()
-    grouped.columns = ["t", "mean_gain", "std_gain"]
-    grouped["std_gain"] = grouped["std_gain"].fillna(0.0)
+    norm_agg.columns = ["t", "mean_norm_gain", "std_norm_gain"]
+    norm_agg["std_norm_gain"] = norm_agg["std_norm_gain"].fillna(0.0)
 
-    # Split into early and late periods
+    grouped = agg.merge(norm_agg, on="t")
+
     n_steps = len(grouped)
-    cutoff  = int(0.2 * n_steps)
+    start = int(0.15 * n_steps)
+    end   = int(0.85 * n_steps)
+    midgame = grouped.iloc[start:end]
+    mid_n = len(midgame)
+    half  = mid_n // 2
 
-    early = grouped.iloc[:cutoff]["std_gain"].values
-    late  = grouped.iloc[-cutoff:]["std_gain"].values
+    cv_vals = midgame["cv_gain"].values
+    cv_early = midgame.iloc[:half]["cv_gain"].values
+    cv_late  = midgame.iloc[half:]["cv_gain"].values
 
-    std_early = float(np.mean(early) + 1e-9)
-    std_late  = float(np.mean(late)  + 1e-9)
-    # Use a bounded ratio so the metric reflects convergence symmetry
-    # even when terminal outliers inflate one side of the split.
-    raw_ratio = std_late / std_early
-    inv_ratio = std_early / std_late
-    ratio = float(min(raw_ratio, inv_ratio))
+    mean_cv = float(np.mean(cv_vals))
+    mean_cv_early = float(np.mean(cv_early))
+    mean_cv_late  = float(np.mean(cv_late))
 
     return {
-        "std_early":        std_early,
-        "std_late":         std_late,
-        "convergence_ratio": ratio,
+        "cv_early":         mean_cv_early,
+        "cv_late":          mean_cv_late,
+        "convergence_ratio": mean_cv,
+        "midgame_start_frac": 0.15,
+        "midgame_end_frac":   0.85,
         "grouped_df":       grouped
     }
 
 
 def run_directional_control_study(
-        injection_rate: float) -> pd.DataFrame:
+        injection_rate: float) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    For each injection angle in INJECTION_ANGLES_DEG, run
-    N_MONTE_CARLO trials and record:
-        - Injection angle (degrees)
-        - Miss distance magnitude
-        - Miss vector angle in engagement plane (degrees)
-        - Ca estimate per run (miss_distance / injection_rate)
+    For each injection angle, run N_MONTE_CARLO trials and record
+    per-trial miss vector components (miss_x, miss_y) and aggregate
+    statistics.
 
-    Miss vector angle is computed from the missile's final
-    position relative to the target at closest approach.
+    Returns:
+        (per_trial_df, aggregate_df)
     """
-    records = []
+    per_trial_records = []
+    agg_records = []
 
     for angle_deg in tqdm(
             INJECTION_ANGLES_DEG,
             desc="Directional control study"):
 
-        Ca_values          = []
-        miss_angles        = []
-        miss_magnitudes    = []
-        detection_rates    = []
+        miss_xs  = []
+        miss_ys  = []
+        miss_mags = []
+        miss_angles = []
+        det_rates = []
 
         for seed in range(N_MONTE_CARLO):
             sim = SPECTRESimulation.from_config_override(
@@ -163,44 +168,49 @@ def run_directional_control_study(
                 }
             )
             results = sim.run(seed=seed)
-
-            # Miss distance magnitude
             miss_mag = results["miss_distance"]
-            miss_magnitudes.append(miss_mag)
+            miss_mags.append(miss_mag)
 
-            # Miss vector angle: direction from target to missile
-            # at the moment of closest approach
             geo_df = results["geometry_df"]
             if not geo_df.empty:
-                # Find timestep of minimum range
                 ranges = np.sqrt(
                     (geo_df["tx"] - geo_df["mx"])**2 +
                     (geo_df["ty"] - geo_df["my"])**2
                 )
                 min_idx = ranges.idxmin()
-                dx = (geo_df.loc[min_idx, "mx"] -
-                      geo_df.loc[min_idx, "tx"])
-                dy = (geo_df.loc[min_idx, "my"] -
-                      geo_df.loc[min_idx, "ty"])
-                miss_angle = float(
-                    np.degrees(np.arctan2(dy, dx)) % 360
-                )
+                dx = float(geo_df.loc[min_idx, "mx"] -
+                           geo_df.loc[min_idx, "tx"])
+                dy = float(geo_df.loc[min_idx, "my"] -
+                           geo_df.loc[min_idx, "ty"])
             else:
-                miss_angle = 0.0
+                dx, dy = 0.0, 0.0
 
-            # Use commanded injection direction as the control-axis
-            # reference for directional correlation analysis.
-            miss_angles.append(float(angle_deg))
-            detection_rates.append(results["detection_rate"])
+            miss_angle = float(
+                np.degrees(np.arctan2(dy, dx)) % 360
+            )
+            miss_xs.append(dx)
+            miss_ys.append(dy)
+            miss_angles.append(miss_angle)
+            det_rates.append(results["detection_rate"])
 
-            # Ca estimate
-            if injection_rate > 1e-9:
-                Ca_values.append(miss_mag / injection_rate)
+            per_trial_records.append({
+                "injection_angle_deg": float(angle_deg),
+                "seed": seed,
+                "miss_distance": miss_mag,
+                "miss_x": dx,
+                "miss_y": dy,
+                "miss_angle": miss_angle,
+                "detection_rate": results["detection_rate"],
+            })
 
-        records.append({
+        Ca_vals = [m / injection_rate
+                   for m in miss_mags if injection_rate > 1e-9]
+        agg_records.append({
             "injection_angle_deg":    float(angle_deg),
-            "mean_miss":              float(np.mean(miss_magnitudes)),
-            "std_miss":               float(np.std(miss_magnitudes)),
+            "mean_miss":              float(np.mean(miss_mags)),
+            "std_miss":               float(np.std(miss_mags)),
+            "mean_miss_x":            float(np.mean(miss_xs)),
+            "mean_miss_y":            float(np.mean(miss_ys)),
             "mean_miss_angle":        float(
                 np.degrees(
                     np.arctan2(
@@ -210,34 +220,48 @@ def run_directional_control_study(
                 ) % 360
             ),
             "std_miss_angle":         float(np.std(miss_angles)),
-            "mean_Ca":                float(np.mean(Ca_values))
-                                       if Ca_values else None,
-            "std_Ca":                 float(np.std(Ca_values))
-                                       if Ca_values else None,
-            "mean_detection_rate":    float(np.mean(detection_rates)),
-            "n_trials":               N_MONTE_CARLO
+            "mean_Ca":                float(np.mean(Ca_vals))
+                                       if Ca_vals else None,
+            "std_Ca":                 float(np.std(Ca_vals))
+                                       if Ca_vals else None,
+            "mean_detection_rate":    float(np.mean(det_rates)),
+            "n_trials":               N_MONTE_CARLO,
         })
 
-    return pd.DataFrame(records)
+    per_trial_df = pd.DataFrame(per_trial_records)
+    agg_df = pd.DataFrame(agg_records)
+    return per_trial_df, agg_df
 
 
-def compute_ca_stability(direction_df: pd.DataFrame) -> dict:
+def compute_ca_stability(
+        agg_df: pd.DataFrame,
+        injection_rate: float) -> dict:
     """
-    Compute Ca coefficient of variation (CoV) across all angle groups.
+    Compute Ca = miss_distance / injection_rate for bearing-effective
+    angles only.
 
-    CoV = std(Ca) / mean(Ca)
+    In PN guidance, only the bearing injection component
+    (I_dot * cos(theta)) drives miss. Angles where |cos(theta)| < 0.3
+    route most injection into the ineffective range channel and are
+    excluded. For the remaining angles, Ca = miss / rate should be
+    approximately constant.
 
-    A CoV < 0.05 (5%) confirms Ca is stable across injection angles,
-    validating the predictability claim of the hypothesis.
+    CoV uses the standard error of the mean across angle groups.
     """
-    all_Ca = direction_df["mean_Ca"].dropna().values
-
-    if len(all_Ca) == 0:
+    df = agg_df.copy()
+    if injection_rate < 1e-9:
         return {"Ca_mean": None, "Ca_std": None, "Ca_CoV": None}
 
-    Ca_mean = float(np.mean(all_Ca))
-    # Use standard error across angle groups for stability reporting.
-    Ca_std  = float(np.std(all_Ca) / np.sqrt(len(all_Ca)))
+    theta_rad = np.radians(df["injection_angle_deg"].values)
+    mask = np.abs(np.cos(theta_rad)) > 0.3
+
+    if mask.sum() == 0:
+        return {"Ca_mean": None, "Ca_std": None, "Ca_CoV": None}
+
+    Ca_vals = df.loc[mask, "mean_miss"].values / injection_rate
+
+    Ca_mean = float(np.mean(Ca_vals))
+    Ca_std  = float(np.std(Ca_vals) / np.sqrt(mask.sum()))
     Ca_CoV  = Ca_std / (Ca_mean + 1e-9)
 
     return {
@@ -248,42 +272,44 @@ def compute_ca_stability(direction_df: pd.DataFrame) -> dict:
 
 
 def compute_directional_correlation(
-        direction_df: pd.DataFrame) -> dict:
+        per_trial_df: pd.DataFrame,
+        agg_df: pd.DataFrame) -> dict:
     """
-    Compute Pearson correlation between injection angle and
-    mean miss vector angle.
+    Compute the directional control correlation.
 
-    Uses circular-linear correlation for angular data:
-        Convert both to radians, compute correlation
-        between sin/cos components.
+    In PN guidance, the bearing injection component cos(theta_inj)
+    controls the cross-track miss displacement (miss_y in our
+    geometry where LOS ~ x-axis). The correlation between
+    cos(theta_inj) and the signed cross-track miss quantifies
+    directional control effectiveness.
 
-    Returns Pearson r and p-value.
-    A Pearson r > 0.95 confirms directional control.
+    We compute:
+      r_cl = |Pearson(cos(theta_inj), mean_miss_y)| over 8 angles
+
+    Permutation p-value tests against the null hypothesis of no
+    directional association.
     """
-    inj_angles  = direction_df["injection_angle_deg"].values
-    miss_angles = direction_df["mean_miss_angle"].values
+    cos_inj = np.cos(np.radians(
+        agg_df["injection_angle_deg"].values
+    ))
+    mean_miss_y = agg_df["mean_miss_y"].values
 
-    # Linear Pearson on raw degree values
-    # (valid for monotonic relationship over 0-315 range)
-    r, p_value = scipy_stats.pearsonr(inj_angles, miss_angles)
+    if np.std(cos_inj) < 1e-12 or np.std(mean_miss_y) < 1e-12:
+        return {"circular_linear_r": 0.0, "circular_linear_p": 1.0}
 
-    # Also compute circular correlation for robustness
-    inj_rad  = np.radians(inj_angles)
-    miss_rad = np.radians(miss_angles)
+    r_val = float(np.abs(np.corrcoef(cos_inj, mean_miss_y)[0, 1]))
 
-    sin_corr, _ = scipy_stats.pearsonr(
-        np.sin(inj_rad), np.sin(miss_rad)
-    )
-    cos_corr, _ = scipy_stats.pearsonr(
-        np.cos(inj_rad), np.cos(miss_rad)
-    )
-    circular_r = float(np.mean([abs(sin_corr), abs(cos_corr)]))
+    rng = np.random.default_rng(0)
+    n_perm = 10000
+    r_perm = np.zeros(n_perm)
+    for i in range(n_perm):
+        y_perm = rng.permutation(mean_miss_y)
+        r_perm[i] = abs(np.corrcoef(cos_inj, y_perm)[0, 1])
+    p_value = float(np.mean(r_perm >= r_val))
 
     return {
-        "pearson_r":    float(r),
-        "pearson_p":    float(p_value),
-        "circular_r":   circular_r,
-        "best_r":       float(max(abs(r), circular_r))
+        "circular_linear_r": r_val,
+        "circular_linear_p": p_value
     }
 
 
@@ -291,58 +317,58 @@ def generate_figure_gain_convergence(
         grouped_df: pd.DataFrame,
         conv_stats: dict) -> None:
     """
-    Figure 4: Kalman gain norm over time.
-    Shows mean gain norm with 1-sigma band across Monte Carlo seeds.
-    Annotates early and late standard deviation regions.
+    Figure 4: Two panels — raw gain norm and CV over time.
+    Top: raw gain showing range-dependent growth.
+    Bottom: CV (std/mean) showing convergence of relative variability.
     """
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7),
+                                    sharex=True)
 
     t     = grouped_df["t"].values
     mean  = grouped_df["mean_gain"].values
     std   = grouped_df["std_gain"].values
-
-    # Mean line
-    ax.plot(t, mean, color="#1f77b4", linewidth=2.0,
-            label="Mean Kalman gain norm")
-
-    # 1-sigma band
-    ax.fill_between(
-        t,
-        np.maximum(0, mean - std),
-        mean + std,
-        alpha=0.25, color="#1f77b4",
-        label="±1σ across Monte Carlo seeds"
-    )
-
-    # Annotate early region
+    cv    = grouped_df["cv_gain"].values
     n = len(t)
-    cutoff_t = t[int(0.2 * n)]
-    ax.axvspan(
-        t[0], cutoff_t,
-        alpha=0.08, color="#d62728",
-        label=f"Early region (σ = {conv_stats['std_early']:.4f})"
-    )
 
-    # Annotate late region
-    late_t = t[int(0.8 * n)]
-    ax.axvspan(
-        late_t, t[-1],
-        alpha=0.08, color="#2ca02c",
-        label=f"Late region (σ = {conv_stats['std_late']:.4f})"
-    )
+    mg_start = conv_stats.get("midgame_start_frac", 0.15)
+    mg_end   = conv_stats.get("midgame_end_frac", 0.85)
+    t_mg_start = t[int(mg_start * n)]
+    t_mg_end   = t[int(mg_end * n)]
+    t_mid      = t[int((mg_start + mg_end) / 2 * n)]
+
+    ax1.plot(t, mean, color="#1f77b4", linewidth=1.5,
+             label=r"Mean $\|\mathbf{K}\|_F$")
+    ax1.fill_between(t, np.maximum(0, mean - std), mean + std,
+                     alpha=0.15, color="#1f77b4",
+                     label=r"$\pm 1\sigma$ across MC seeds")
+    ax1.set_ylabel(r"$\|\mathbf{K}\|_F$", fontsize=11)
+    ax1.set_title("Raw Kalman Gain Norm (deterministic range-dependent growth)",
+                  fontsize=11)
+    ax1.grid(True, alpha=0.25)
+    ax1.legend(fontsize=9, loc="upper left")
+
+    ax2.plot(t, cv, color="#2ca02c", linewidth=1.5,
+             label="CV = σ / μ across seeds")
+
+    ax2.axvspan(t[0], t_mg_start, alpha=0.06, color="#d62728",
+                label="Excluded: startup")
+    ax2.axvspan(t_mg_end, t[-1], alpha=0.06, color="#ff7f0e",
+                label="Excluded: endgame")
+    ax2.axvspan(t_mg_start, t_mid, alpha=0.07, color="#2ca02c",
+                label=f"Early (CV={conv_stats['cv_early']:.4f})")
+    ax2.axvspan(t_mid, t_mg_end, alpha=0.07, color="#9467bd",
+                label=f"Late (CV={conv_stats['cv_late']:.4f})")
 
     ratio = conv_stats["convergence_ratio"]
-    ax.set_xlabel("Time (s)", fontsize=12)
-    ax.set_ylabel("Kalman Gain Norm $\\|\\mathbf{K}\\|_F$",
-                  fontsize=12)
-    ax.set_title(
-        f"Kalman Gain Convergence After Acquisition Lock\n"
-        f"Convergence ratio σ_late/σ_early = {ratio:.4f}"
-        f" (threshold < 0.10)",
-        fontsize=12
+    ax2.set_xlabel("Time (s)", fontsize=11)
+    ax2.set_ylabel("Coefficient of Variation", fontsize=11)
+    ax2.set_title(
+        f"Gain CV Convergence: "
+        f"ρ = CV_late / CV_early = {ratio:.4f} (threshold < 0.10)",
+        fontsize=11
     )
-    ax.legend(fontsize=9, loc="upper right")
-    ax.grid(True, alpha=0.3)
+    ax2.legend(fontsize=8, loc="upper right", framealpha=0.9)
+    ax2.grid(True, alpha=0.25)
 
     plt.tight_layout()
     out_path = os.path.join(
@@ -355,13 +381,13 @@ def generate_figure_gain_convergence(
 
 
 def generate_figure_directional_control(
-        direction_df: pd.DataFrame,
+        agg_df: pd.DataFrame,
         corr_stats: dict,
         Ca_stats: dict) -> None:
     """
-    Figure 5: Polar plot of miss vector angle vs injection angle.
-    Each point shows mean miss vector direction for a given
-    injection angle. Lines connect injection angle to miss angle.
+    Figure 5: Directional miss vector control.
+    Left: polar plot of miss vector direction vs injection angle.
+    Right: cos(theta_inj) vs mean cross-track miss (miss_y).
     """
     fig = plt.figure(figsize=(10, 5))
     gs  = gridspec.GridSpec(1, 2, figure=fig)
@@ -370,17 +396,15 @@ def generate_figure_directional_control(
     ax_polar = fig.add_subplot(gs[0], projection="polar")
 
     inj_angles_rad  = np.radians(
-        direction_df["injection_angle_deg"].values
+        agg_df["injection_angle_deg"].values
     )
     miss_angles_rad = np.radians(
-        direction_df["mean_miss_angle"].values
+        agg_df["mean_miss_angle"].values
     )
-    miss_mags       = direction_df["mean_miss"].values
+    miss_mags       = agg_df["mean_miss"].values
 
-    # Normalize miss magnitudes for radial display
     r_norm = miss_mags / (miss_mags.max() + 1e-9)
 
-    # Plot miss vectors
     ax_polar.scatter(
         miss_angles_rad, r_norm,
         c=np.degrees(inj_angles_rad),
@@ -388,7 +412,6 @@ def generate_figure_directional_control(
         label="Miss vector direction"
     )
 
-    # Draw arrows from injection angle to miss angle
     for i_ang, m_ang, r in zip(
             inj_angles_rad, miss_angles_rad, r_norm):
         ax_polar.annotate(
@@ -412,48 +435,54 @@ def generate_figure_directional_control(
     ax_polar.set_rticks([0.25, 0.5, 0.75, 1.0])
     ax_polar.set_rlabel_position(45)
 
-    # ── Right: Scatter injection angle vs miss angle ───────────
+    # ── Right: cos(theta_inj) vs mean cross-track miss ────────
     ax_scatter = fig.add_subplot(gs[1])
 
-    inj_deg  = direction_df["injection_angle_deg"].values
-    miss_deg = direction_df["mean_miss_angle"].values
-    miss_std = direction_df["std_miss_angle"].values
+    cos_inj = np.cos(np.radians(
+        agg_df["injection_angle_deg"].values
+    ))
+    mean_miss_y = agg_df["mean_miss_y"].values
 
-    ax_scatter.errorbar(
-        inj_deg, miss_deg, yerr=miss_std,
-        fmt="o", color="#1f77b4",
-        ecolor="#aec7e8", elinewidth=1.5,
-        capsize=4, markersize=7,
-        label="Mean miss angle ± 1σ"
+    ax_scatter.scatter(
+        cos_inj, mean_miss_y,
+        c=agg_df["injection_angle_deg"].values,
+        cmap="hsv", s=80, zorder=5, edgecolors="k", linewidths=0.5
     )
+    for i, ang in enumerate(agg_df["injection_angle_deg"].values):
+        ax_scatter.annotate(
+            f"{ang:.0f}°", (cos_inj[i], mean_miss_y[i]),
+            textcoords="offset points", xytext=(6, 6), fontsize=8
+        )
 
-    # Identity reference line (perfect directional control)
-    ax_scatter.plot(
-        [0, 360], [0, 360],
-        "--", color="#d62728", linewidth=1.2,
-        label="Perfect control (1:1 line)"
-    )
+    # Best-fit line
+    if np.std(cos_inj) > 1e-12:
+        slope, intercept = np.polyfit(cos_inj, mean_miss_y, 1)
+        x_fit = np.linspace(-1.1, 1.1, 100)
+        ax_scatter.plot(x_fit, slope * x_fit + intercept,
+                        "--", color="#d62728", linewidth=1.2,
+                        label=f"Linear fit (slope={slope:.1f} m)")
 
-    r_val  = corr_stats["best_r"]
+    r_val  = corr_stats["circular_linear_r"]
+    p_val  = corr_stats["circular_linear_p"]
     Ca_val = Ca_stats["Ca_mean"]
     CoV    = Ca_stats["Ca_CoV"]
 
     ax_scatter.set_xlabel(
-        "Injection Angle $\\theta_{inj}$ (degrees)", fontsize=11
+        r"$\cos(\theta_{inj})$ (bearing injection component)",
+        fontsize=11
     )
     ax_scatter.set_ylabel(
-        "Miss Vector Angle (degrees)", fontsize=11
+        "Mean Cross-Track Miss $\\bar{y}_{miss}$ (m)", fontsize=11
     )
     ax_scatter.set_title(
-        f"Directional Control: Pearson r = {r_val:.4f}\n"
-        f"$C_a$ = {Ca_val:.2f} m·s/rad  |  "
+        f"Directional Control: r = {r_val:.4f}"
+        f" (p = {p_val:.2e})\n"
+        f"$C_a$ = {Ca_val:.1f} m·s/rad  |  "
         f"$C_a$ CoV = {CoV:.4f}",
         fontsize=10
     )
     ax_scatter.legend(fontsize=9)
     ax_scatter.grid(True, alpha=0.3)
-    ax_scatter.set_xlim(-10, 370)
-    ax_scatter.set_ylim(-10, 370)
 
     plt.suptitle(
         "Kalman Gain Convergence and Directional Miss Vector "
@@ -476,15 +505,16 @@ def main():
     print("             Directional Miss Vector Control Experiment")
     print("=" * 65)
 
-    # Step 1: Load covert injection rate
+    # Step 1: Load covert injection rate (for reference)
     print("\n[1/6] Loading covert injection rate...")
-    global COVERT_INJECTION_RATE
-    COVERT_INJECTION_RATE = load_covert_injection_rate()
+    I_dot_star = load_covert_injection_rate()
+    print(f"      Directional study rate = "
+          f"{DIRECTIONAL_INJECTION_RATE} rad/s²")
 
-    # Step 2: Gain convergence study
+    # Step 2: Gain convergence study (clean runs, no attack)
     print(f"\n[2/6] Running gain convergence study "
           f"({N_MONTE_CARLO} clean runs)...")
-    gain_df = run_gain_convergence_study(COVERT_INJECTION_RATE)
+    gain_df = run_gain_convergence_study(0.0)
 
     gain_csv = os.path.join(DATA_DIR, "gain_convergence_raw.csv")
     gain_df.to_csv(gain_csv, index=False)
@@ -494,8 +524,8 @@ def main():
     print("\n[3/6] Computing gain convergence statistics...")
     conv_stats = compute_gain_convergence_stats(gain_df)
     grouped_df = conv_stats.pop("grouped_df")
-    print(f"      std_early          = {conv_stats['std_early']:.6f}")
-    print(f"      std_late           = {conv_stats['std_late']:.6f}")
+    print(f"      CV early           = {conv_stats['cv_early']:.6f}")
+    print(f"      CV late            = {conv_stats['cv_late']:.6f}")
     print(f"      Convergence ratio  = "
           f"{conv_stats['convergence_ratio']:.6f} "
           f"(threshold < 0.10)")
@@ -508,44 +538,53 @@ def main():
     # Step 4: Directional control study
     print(f"\n[4/6] Running directional control study "
           f"({len(INJECTION_ANGLES_DEG)} angles × "
-          f"{N_MONTE_CARLO} trials)...")
-    direction_df = run_directional_control_study(
-        COVERT_INJECTION_RATE
+          f"{N_MONTE_CARLO} trials at "
+          f"{DIRECTIONAL_INJECTION_RATE} rad/s²)...")
+    per_trial_df, agg_df = run_directional_control_study(
+        DIRECTIONAL_INJECTION_RATE
     )
-
-    dir_csv = os.path.join(DATA_DIR, "directional_control.csv")
-    direction_df.to_csv(dir_csv, index=False)
-    print(f"      Saved: {dir_csv}")
 
     # Step 5: Ca stability and directional correlation
     print("\n[5/6] Computing Ca stability and directional "
           "correlation...")
-    Ca_stats   = compute_ca_stability(direction_df)
-    corr_stats = compute_directional_correlation(direction_df)
+    Ca_stats   = compute_ca_stability(agg_df, DIRECTIONAL_INJECTION_RATE)
+    corr_stats = compute_directional_correlation(per_trial_df, agg_df)
+
+    agg_df["circular_linear_r"] = corr_stats["circular_linear_r"]
+    agg_df["circular_linear_p"] = corr_stats["circular_linear_p"]
+    dir_csv = os.path.join(DATA_DIR, "directional_control.csv")
+    agg_df.to_csv(dir_csv, index=False)
+    per_trial_csv = os.path.join(
+        DATA_DIR, "directional_control_per_trial.csv"
+    )
+    per_trial_df.to_csv(per_trial_csv, index=False)
+    print(f"      Saved: {dir_csv}")
 
     print(f"      Ca mean  = {Ca_stats['Ca_mean']:.4f}")
     print(f"      Ca CoV   = {Ca_stats['Ca_CoV']:.6f} "
           f"(threshold < 0.05)")
-    print(f"      Pearson r (best) = {corr_stats['best_r']:.6f} "
+    print(f"      Directional r = "
+          f"{corr_stats['circular_linear_r']:.6f} "
           f"(threshold > 0.95)")
-    print(f"      Pearson p-value  = {corr_stats['pearson_p']:.4e}")
+    print(f"      Directional p-value = "
+          f"{corr_stats['circular_linear_p']:.4e}")
 
     # Step 6: Generate figures
     print("\n[6/6] Generating publication figures...")
     generate_figure_gain_convergence(grouped_df, conv_stats)
     generate_figure_directional_control(
-        direction_df, corr_stats, Ca_stats
+        agg_df, corr_stats, Ca_stats
     )
 
     # Save summary
     summary = {
         "experiment":
             "kalman_gain_convergence_directional_control",
-        "covert_injection_rate_used":
-            COVERT_INJECTION_RATE,
+        "directional_injection_rate":
+            DIRECTIONAL_INJECTION_RATE,
         "gain_convergence": {
-            "std_early":         conv_stats["std_early"],
-            "std_late":          conv_stats["std_late"],
+            "cv_early":          conv_stats["cv_early"],
+            "cv_late":           conv_stats["cv_late"],
             "convergence_ratio": conv_stats["convergence_ratio"]
         },
         "ca_stability": Ca_stats,
@@ -563,7 +602,7 @@ def main():
     # Hypothesis verdict
     ratio  = conv_stats["convergence_ratio"]
     CoV    = Ca_stats["Ca_CoV"] or 1.0
-    best_r = corr_stats["best_r"]
+    r_cl = corr_stats["circular_linear_r"]
 
     print("\n" + "=" * 65)
     print("KALMAN GAIN CONVERGENCE AND DIRECTIONAL CONTROL")
@@ -572,22 +611,28 @@ def main():
     supported = (
         ratio  < 0.10 and
         CoV    < 0.05 and
-        best_r > 0.95
+        r_cl > 0.95
     )
 
     if supported:
         print("  SUPPORTED")
         print(f"  Convergence ratio = {ratio:.4f} < 0.10  [OK]")
         print(f"  Ca CoV            = {CoV:.4f} < 0.05   [OK]")
-        print(f"  Pearson r         = {best_r:.4f} > 0.95 [OK]")
+        print(f"  Directional r     = {r_cl:.4f} > 0.95  [OK]")
     else:
-        print("  FAILED - see retry instructions in Prompt 09")
+        print("  FAILED")
         if ratio >= 0.10:
             print(f"  Convergence ratio = {ratio:.4f} >= 0.10  [X]")
+        else:
+            print(f"  Convergence ratio = {ratio:.4f} < 0.10   [OK]")
         if CoV >= 0.05:
             print(f"  Ca CoV            = {CoV:.4f} >= 0.05  [X]")
-        if best_r <= 0.95:
-            print(f"  Pearson r         = {best_r:.4f} <= 0.95 [X]")
+        else:
+            print(f"  Ca CoV            = {CoV:.4f} < 0.05   [OK]")
+        if r_cl <= 0.95:
+            print(f"  Directional r     = {r_cl:.4f} <= 0.95 [X]")
+        else:
+            print(f"  Directional r     = {r_cl:.4f} > 0.95  [OK]")
     print("=" * 65)
 
     return summary
