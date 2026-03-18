@@ -1,34 +1,27 @@
-﻿cff-version: 1.2.0
+cff-version: 1.2.0
 message: >
-If you use SPECTRE-SIM in your research, please cite it
-using the metadata below.
+  If you use SPECTRE-SIM in your research, please cite it
+  using the metadata below.
 type: software
 title: >
-SPECTRE-SIM: Seeker-Phase EKF Covert Target Ramp
-Exploitation Simulator
+  SPECTRE-SIM: Seeker-Phase EKF Covert Target Ramp
+  Exploitation Simulator
 abstract: >
-SPECTRE-SIM is a 2D missile-target engagement simulation
-framework for studying adversarial false target injection
-attacks on Extended Kalman Filter-based proportional
-navigation guidance systems. It implements and validates
-three research hypotheses: miss distance proportionality,
-covert injection threshold derivation, and Kalman gain
-convergence with directional miss vector control.
+  SPECTRE-SIM is a 2D missile-target engagement simulation
+  framework for studying adversarial false target injection
+  attacks on Extended Kalman Filter-based proportional
+  navigation guidance systems. It implements and validates
+  three research hypotheses: miss distance proportionality,
+  covert injection threshold derivation, and Kalman gain
+  convergence with directional miss vector control.
 version: 1.0.0
 license: MIT
-repository-code:https://github.com/nareshdama/SPECTRE-SIM.git 
+repository-code: https://github.com/nareshdama/SPECTRE-SIM.git
 keywords:
-
-missile guidance
-
-extended kalman filter
-
-adversarial attack
-
-proportional navigation
-
-false data injection
-
-electronic warfare
-
-simulation
+  - missile guidance
+  - extended kalman filter
+  - adversarial attack
+  - proportional navigation
+  - false data injection
+  - electronic warfare
+  - simulation
