@@ -1,7 +1,7 @@
-﻿# SPECTRE-SIM Experiments
+# SPECTRE-SIM Experiments
 
-Three experiments validate the three research hypotheses.
-All experiments are run automatically by `python run_all.py`.
+Five experiments support the three research hypotheses and supplementary analysis.
+The three core experiments (1–3) are run automatically by `python run_all.py`.
 
 ---
 
@@ -10,19 +10,18 @@ All experiments are run automatically by `python run_all.py`.
 **Script:** `experiments/run_miss_distance_proportionality.py`
 
 **Hypothesis:** Miss distance scales linearly with injection rate
-governed by a stabilized proportionality coefficient Ca:
+governed by a stabilized proportionality coefficient \(C_a\):
 
-    D_m = Ca * I_dot + epsilon
+    D_m = C_a * I_dot + epsilon
 
 **Method:**
-- 9 injection rates: [0.0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5]
-- 30 Monte Carlo trials per injection rate (varied random seed)
-- Linear regression fit using scipy.stats.linregress
-- One-way ANOVA across injection rate groups
+- 12 injection rates: [0.0, 0.01, 0.02, …, 0.10] rad/s²
+- 100 Monte Carlo trials per injection rate
+- Linear regression on super-effective regime (I_dot ≥ 0.05 rad/s²)
 
 **Acceptance Criteria:**
-- R-squared > 0.95
-- ANOVA p-value < 0.05
+- R² > 0.95
+- Regression p-value < 0.05
 
 **Outputs:**
 - results/data/miss_proportionality_sweep.csv
@@ -36,22 +35,22 @@ governed by a stabilized proportionality coefficient Ca:
 
 **Script:** `experiments/run_covert_threshold.py`
 
-**Hypothesis:** A critical injection rate I_dot* exists below
+**Hypothesis:** A critical injection rate \(\dot{I}^*\) exists below
 which the attack remains statistically undetectable by the
 chi-squared innovation gate monitor.
 
 **Method:**
-- Analytical derivation of I_dot* from steady-state EKF
+- Analytical derivation of \(\dot{I}^*\) from steady-state EKF
   covariance, Kalman gain, and chi-squared gate geometry
-- 100-point fine numerical sweep from 0 to 2 * I_dot*
+- 100-point fine numerical sweep from 0 to 2×\(\dot{I}^*\)
 - 50 Monte Carlo trials per injection rate
-- Empirical threshold identified by linear interpolation
+- Empirical threshold via linear interpolation at 10% trigger level
 
 **Acceptance Criteria:**
-- I_dot* is positive and finite
+- \(\dot{I}^*\) is positive and finite
 - Analytical vs empirical agreement within 15%
-- Detection rate at 0.5 * I_dot* below 0.10
-- Detection rate at 2.0 * I_dot* above 0.30
+- Detection rate at 0.5×\(\dot{I}^*\) below 0.10
+- Detection rate at 2.0×\(\dot{I}^*\) above 0.30
 
 **Outputs:**
 - results/data/covert_threshold_sweep.csv
@@ -65,22 +64,26 @@ chi-squared innovation gate monitor.
 **Script:** `experiments/run_gain_convergence_directional.py`
 
 **Hypothesis:** After EKF acquisition lock, the Kalman gain
-converges to a stable steady-state value making Ca fixed and
-predictable, and the miss vector direction is independently
-controllable by varying the injection angle.
+is essentially deterministic (low coefficient of variation across
+Monte Carlo seeds), making \(C_a\) stable, and the miss vector
+direction is controllable via the bearing injection component.
 
 **Method:**
-- 100 clean Monte Carlo runs for gain convergence measurement
-- Convergence ratio: std_late / std_early of Kalman gain norm
-- 8 injection angles: [0, 45, 90, 135, 180, 225, 270, 315] degrees
-- 100 Monte Carlo trials per angle
-- Pearson correlation between injection angle and miss vector angle
-- Ca coefficient of variation across all angle groups
+- **Gain convergence:** 100 clean Monte Carlo runs; compute
+  mean coefficient of variation (CV = σ/μ) of gain norm across
+  seeds over the mid-game window (15%–85% of engagement).
+  \(\rho = \overline{\text{CV}}_{\text{midgame}}\).
+- **Directional control:** 8 injection angles [0°, 45°, …, 315°]
+  at \(\dot{I} = 0.10\) rad/s²; 100 trials per angle.
+  Pearson correlation between \(\cos\theta_{\text{inj}}\) and
+  mean signed cross-track miss displacement.
+- \(C_a\) stability: CoV of \(C_a\) across bearing-effective angles
+  (\(|\cos\theta_{\text{inj}}| > 0.3\)).
 
 **Acceptance Criteria:**
-- Convergence ratio sigma_late / sigma_early < 0.10
-- Ca coefficient of variation < 0.05
-- Pearson r (injection angle vs miss angle) > 0.95
+- \(\rho < 0.10\) (gain convergence)
+- \(C_a\) CoV < 0.05
+- Pearson r (\(\cos\theta_{\text{inj}}\) vs \(\bar{y}_{\text{miss}}\)) > 0.95
 
 **Outputs:**
 - results/data/gain_convergence_raw.csv
@@ -92,16 +95,53 @@ controllable by varying the injection angle.
 
 ---
 
+## Experiment 4: Sensitivity Analysis
+
+**Script:** `experiments/run_sensitivity_analysis.py`
+
+**Purpose:** Quantify robustness of \(C_a\) under parametric variation.
+
+**Method:**
+- One-at-a-time sweeps: N ∈ {3, 4, 5}, V_c scale, Q scale, R scale
+- 30 Monte Carlo trials per configuration at \(\dot{I} = 0.06\) rad/s²
+
+**Outputs:**
+- results/data/sensitivity_analysis.csv
+- results/data/sensitivity_analysis_summary.json
+- results/figures/fig6_sensitivity_analysis.png
+
+---
+
+## Experiment 5: Attack Waveform and Detector Comparison
+
+**Script:** `experiments/run_attack_comparison.py`
+
+**Purpose:** Compare ramp vs step vs sinusoidal injection waveforms and
+chi-squared vs CUSUM detectors.
+
+**Method:**
+- Waveforms: ramp (baseline), step, sinusoidal at matched rates
+- Detectors: chi-squared gate vs CUSUM at several injection rates
+
+**Outputs:**
+- results/data/attack_comparison_summary.json
+- results/figures/fig7_attack_comparison.png
+
+---
+
 ## Running Individual Experiments
 
 ```bash
-# Run all experiments + QA report (recommended)
+# Run core experiments + QA report (recommended)
 python run_all.py
 
-# Run one experiment at a time
+# Skip experiments, verify existing outputs
+python run_all.py --skip-experiments
+
+# Individual experiments
 python experiments/run_miss_distance_proportionality.py
 python experiments/run_covert_threshold.py
 python experiments/run_gain_convergence_directional.py
-
-# Verify existing outputs without re-running
-python run_all.py --verify
+python experiments/run_sensitivity_analysis.py
+python experiments/run_attack_comparison.py
+```

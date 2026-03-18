@@ -26,7 +26,7 @@ OVERALL VERDICT: ALL HYPOTHESES SUPPORTED
 ## What SPECTRE-SIM Does
 
 SPECTRE-SIM models a covert adversarial attack on a missile seeker.  
-The attacker injects a slowly ramping false angular bearing measurement into the EKF measurement channel **after acquisition lock**.
+The attacker injects a slowly ramping false measurement into the **two-channel (bearing and range)** EKF measurement model **after acquisition lock**.
 
 Because the ramp rate can stay below the chi-squared innovation gate threshold, the attack can remain statistically undetectable while systematically steering the missile away from the true target.
 
@@ -56,7 +56,9 @@ SPECTRE-SIM/
 ├── experiments/
 │   ├── run_miss_distance_proportionality.py
 │   ├── run_covert_threshold.py
-│   └── run_gain_convergence_directional.py
+│   ├── run_gain_convergence_directional.py
+│   ├── run_sensitivity_analysis.py
+│   └── run_attack_comparison.py
 ├── tests/
 ├── docs/
 │   ├── ARCHITECTURE.md
@@ -81,27 +83,30 @@ SPECTRE-SIM/
 python run_all.py
 
 # Verify existing outputs without re-running experiments
-python run_all.py --verify
+python run_all.py --skip-experiments
 
 # Individual experiments
 python experiments/run_miss_distance_proportionality.py
 python experiments/run_covert_threshold.py
 python experiments/run_gain_convergence_directional.py
+python experiments/run_sensitivity_analysis.py
+python experiments/run_attack_comparison.py
 ```
 
 ---
 
 ## Attack Model
 
-The measurement injection is:
+The two-channel measurement injection is:
 
 ```text
-delta_z(t) = I_dot * (t - t_lock) * cos(theta_inj)
+z_inj(t) = z_true(t) + I_dot * (t - t_lock) * [cos(theta_inj); gamma * sin(theta_inj)]
 ```
 
 where:
-- `I_dot` is the injection rate \([rad/s^2]\)
-- `theta_inj` is the attack direction angle
+- `I_dot` is the injection rate [rad/s²]
+- `theta_inj` is the attack direction angle (bearing component ∝ cos, range component ∝ sin)
+- `gamma` scales angular ramp to range-equivalent units
 
 The critical covert threshold rate is derived from steady-state EKF quantities:
 
@@ -120,7 +125,7 @@ python -m pytest tests/ -v --tb=short
 ```
 
 Current baseline:
-- **66 passed, 0 failed**
+- **81 passed, 0 failed**
 
 ---
 
@@ -131,8 +136,10 @@ Current baseline:
 | fig1 | Miss distance vs injection rate (linear fit + \(R^2\)) |
 | fig2 | Detection rate vs injection rate (covert zone) |
 | fig3 | Covert threshold: analytical vs empirical boundary |
-| fig4 | Kalman gain convergence after acquisition lock |
-| fig5 | Polar miss vector directional control map |
+| fig4 | Kalman gain convergence (CV-based) after acquisition lock |
+| fig5 | Directional miss vector control (cos θ vs cross-track miss) |
+| fig6 | Sensitivity of \(C_a\) to engagement parameters |
+| fig7 | Attack waveform and detector comparison (ramp/step/sine, chi² vs CUSUM) |
 
 ---
 
