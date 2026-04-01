@@ -28,7 +28,7 @@ OVERALL VERDICT: ALL HYPOTHESES SUPPORTED
 SPECTRE-SIM models a covert adversarial attack on a missile seeker.  
 The attacker injects a slowly ramping false measurement into the **two-channel (bearing and range)** EKF measurement model **after acquisition lock**.
 
-Because the ramp rate can stay below the chi-squared innovation gate threshold, the attack can remain statistically undetectable while systematically steering the missile away from the true target.
+Because the ramp rate can stay below the chi-squared innovation gate threshold, the attack can remain statistically undetectable while systematically steering the missile away from the true target. Set `attacker.mode: optimized` in `config/sim_config.yaml` for an innovation-bounded, optimization-based injection law (see `docs/EXPERIMENTS.md`).
 
 ### Validated Research Hypotheses
 
@@ -51,7 +51,9 @@ SPECTRE-SIM/
 │   ├── estimator/ekf_seeker.py
 │   ├── guidance/pn_guidance.py
 │   ├── attacker/injection_attacker.py
+│   ├── attacker/optimized_stealth_attacker.py
 │   ├── monitor/chi2_monitor.py
+│   ├── monitor/cusum_detection.py
 │   └── simulation_runner.py
 ├── experiments/
 │   ├── run_miss_distance_proportionality.py
@@ -59,11 +61,15 @@ SPECTRE-SIM/
 │   ├── run_gain_convergence_directional.py
 │   ├── run_sensitivity_analysis.py
 │   └── run_attack_comparison.py
+│   ├── run_optimized_attack_pilot.py
+│   └── run_geometry_sweep.py
 ├── tests/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── EXPERIMENTS.md
-│   └── CONFIGURATION.md
+│   ├── CONFIGURATION.md
+│   ├── REJECTION_ACTION_MATRIX.md
+│   └── SUBMISSION_DUAL_TRACK.md
 ├── results/
 │   ├── data/
 │   └── figures/
@@ -91,6 +97,8 @@ python experiments/run_covert_threshold.py
 python experiments/run_gain_convergence_directional.py
 python experiments/run_sensitivity_analysis.py
 python experiments/run_attack_comparison.py
+python experiments/run_optimized_attack_pilot.py
+python experiments/run_geometry_sweep.py
 ```
 
 ---

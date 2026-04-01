@@ -129,6 +129,32 @@ chi-squared vs CUSUM detectors.
 
 ---
 
+## Experiment 6: Ramp vs Optimization-Constrained Stealth (Pilot)
+
+**Script:** `experiments/run_optimized_attack_pilot.py`
+
+**Purpose:** Compare default **ramp** injection (`attacker.mode: ramp`) to **optimization-constrained** injection (`attacker.mode: optimized`) on mean miss distance and tracking-phase chi-squared / CUSUM alarm rates.
+
+**Method:** Monte Carlo batches (default 20 trials) at fixed injection rate; optimized mode uses tuned per-step caps in the script overrides.
+
+**Outputs:**
+- results/data/optimized_attack_pilot.csv
+- results/data/optimized_attack_pilot_summary.json
+
+---
+
+## Experiment 7: Engagement Geometry Sweep
+
+**Script:** `experiments/run_geometry_sweep.py`
+
+**Purpose:** Stress the ramp attack across distinct initial geometries (baseline, head-on, crossing, tail-chase) with fixed injection parameters.
+
+**Outputs:**
+- results/data/geometry_sweep.csv
+- results/data/geometry_sweep_summary.json
+
+---
+
 ## Running Individual Experiments
 
 ```bash
@@ -144,4 +170,6 @@ python experiments/run_covert_threshold.py
 python experiments/run_gain_convergence_directional.py
 python experiments/run_sensitivity_analysis.py
 python experiments/run_attack_comparison.py
+python experiments/run_optimized_attack_pilot.py
+python experiments/run_geometry_sweep.py
 ```

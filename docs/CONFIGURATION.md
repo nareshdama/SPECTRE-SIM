@@ -65,11 +65,14 @@ All simulation parameters are controlled by:
 
 | Key                  | Default | Units   | Description                      |
 |----------------------|---------|---------|----------------------------------|
+| mode                 | ramp    | —       | `ramp` or `optimized`            |
 | injection_rate       | 0.0     | rad/s²  | Ramp rate (0 = clean run)        |
 | injection_angle_deg  | 90.0    | degrees | Attack direction angle           |
 | physical_accel_max   | 2000.0  | m/s²    | Kinematic consistency limit     |
 | range_injection_scale| 5000.0  | m/rad   | Scale for range-channel injection|
 | active               | false   | bool    | Attack enable flag               |
+
+**attacker.optimized** (when `mode: optimized`): `chi2_margin` (fraction of chi-squared threshold), `du_max_bearing` (rad per step), `du_max_range` (m per step).
 
 ---
 

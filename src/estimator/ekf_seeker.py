@@ -107,6 +107,32 @@ class EKFSeeker:
         self.P = F @ self.P @ F.T + self.Q
         self.t_current += self.dt
 
+    def innovation_statistics(self, z_meas) -> tuple:
+        """
+        Innovation residual and covariance **after predict(), before update()**.
+
+        Used by optimization-based attackers that choose additive injection
+        in measurement space subject to a Mahalanobis constraint.
+
+        Returns:
+            innov: innovation vector r = z - h(x_hat_{k|k-1})
+            S:     innovation covariance H P H^T + R
+            chi2:  r^T S^{-1} r
+        """
+        if np.isscalar(z_meas):
+            z = np.array([z_meas])
+        else:
+            z = np.asarray(z_meas, dtype=float)
+
+        H = self._measurement_jacobian(self.x_hat)
+        z_pred = self._h(self.x_hat)
+        innov = z - z_pred
+        innov[0] = self._normalize_angle(innov[0])
+        S = H @ self.P @ H.T + self.R
+        S_inv = np.linalg.inv(S)
+        chi2 = float(innov @ S_inv @ innov)
+        return innov.copy(), S.copy(), chi2
+
     def update(self, z_meas) -> dict:
         """
         EKF update step: incorporate measurement (scalar or vector).

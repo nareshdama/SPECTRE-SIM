@@ -10,7 +10,9 @@ from src.engagement.geometry import EngagementGeometry
 from src.estimator.ekf_seeker import EKFSeeker
 from src.guidance.pn_guidance import PNGuidance
 from src.attacker.injection_attacker import InjectionAttacker
+from src.attacker.optimized_stealth_attacker import OptimizedStealthAttacker
 from src.monitor.chi2_monitor import Chi2InnovationMonitor
+from src.monitor.cusum_detection import cusum_tracking_alarm_rate
 
 
 class SPECTRESimulation:
@@ -37,10 +39,17 @@ class SPECTRESimulation:
         self.geometry = EngagementGeometry(self.config)
         self.ekf = EKFSeeker(self.config)
         self.guidance = PNGuidance(self.config)
-        self.attacker = InjectionAttacker(self.config)
+        self.attacker = self._make_attacker(self.config)
         self.monitor = Chi2InnovationMonitor(self.config)
 
         self.results = {}
+
+    @staticmethod
+    def _make_attacker(config: dict):
+        mode = config.get("attacker", {}).get("mode", "ramp")
+        if mode == "optimized":
+            return OptimizedStealthAttacker(config)
+        return InjectionAttacker(config)
 
     def _get_initial_relative_state(self) -> np.ndarray:
         cfg = self.config
@@ -101,9 +110,10 @@ class SPECTRESimulation:
                 noise = np.random.normal(0.0, np.sqrt(R_matrix[0, 0]))
                 z_noisy = z_true + noise
 
-            z_measured = self.attacker.compute_injection(t, z_noisy)
-
             self.ekf.predict()
+            z_measured = self.attacker.compute_injection(
+                t, z_noisy, ekf=self.ekf
+            )
             ekf_out = self.ekf.update(z_measured)
 
             if self.ekf.is_locked() and not self.attacker.is_active():
@@ -132,9 +142,11 @@ class SPECTRESimulation:
         attacker_df = self.attacker.export_history()
         monitor_df  = self.monitor.export_history()
 
-        inj_rate = self.config["attacker"]["injection_rate"]
+        atk_cfg = self.config["attacker"]
+        inj_rate = atk_cfg["injection_rate"]
         miss = self.geometry.get_miss_distance()
         Ca_estimate = (miss / inj_rate) if inj_rate > 1e-9 else None
+        cusum_rate = cusum_tracking_alarm_rate(monitor_df)
 
         lock_time = None
         if not ekf_df.empty:
@@ -147,6 +159,7 @@ class SPECTRESimulation:
             "t_final":          self.geometry.t_current,
             "detection_rate":   self.monitor.get_tracking_detection_rate(),
             "detection_rate_cumulative": self.monitor.get_detection_rate(),
+            "detection_rate_cusum_tracking": cusum_rate,
             "max_chi2":         float(
                 monitor_df["chi2_stat"].max()
                 if not monitor_df.empty else 0.0
@@ -156,6 +169,7 @@ class SPECTRESimulation:
             "clipping_events":  self.guidance.get_clip_count(),
             "total_alarms":     self.monitor.get_total_alarms(),
             "injection_rate":   inj_rate,
+            "attacker_mode":    atk_cfg.get("mode", "ramp"),
             "seed":             int(np.random.get_state()[1][0]),
 
             "geometry_df":      geo_df,

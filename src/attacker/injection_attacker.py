@@ -90,7 +90,7 @@ class InjectionAttacker:
             return 0.0
         return self.injection_rate * (self.t_current - self.t_start)
 
-    def compute_injection(self, t: float, z_true) -> np.ndarray:
+    def compute_injection(self, t: float, z_true, ekf=None) -> np.ndarray:
         """
         Compute injected measurement for current timestep.
 
@@ -100,10 +100,12 @@ class InjectionAttacker:
         Args:
             t      : current simulation time [s]
             z_true : true measurement -- scalar or np.ndarray
+            ekf    : optional; unused for ramp mode (optimized attackers pass EKF)
 
         Returns:
             z_injected: measurement seen by EKF (same shape as z_true)
         """
+        _ = ekf
         self.t_current = t
         is_scalar = np.isscalar(z_true)
         z_vec = np.atleast_1d(np.asarray(z_true, dtype=float))

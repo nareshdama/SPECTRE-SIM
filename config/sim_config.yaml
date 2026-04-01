@@ -26,11 +26,17 @@ guidance:
   a_max: 300.0
 
 attacker:
+  # ramp: linear ramp offset (legacy). optimized: innovation-constrained steps.
+  mode: ramp
   injection_rate: 0.0
   injection_angle_deg: 90.0
   physical_accel_max: 2000.0
   range_injection_scale: 5000.0
   active: false
+  optimized:
+    chi2_margin: 0.92
+    du_max_bearing: 0.00005
+    du_max_range: 15.0
 
 monitor:
   alpha: 0.05
